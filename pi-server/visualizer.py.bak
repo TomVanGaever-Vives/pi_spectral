@@ -1,0 +1,349 @@
+"""
+visualizer.py — pygame HDMI display: waveform + FFT spectrum + interactive controls.
+
+Layout:
+  ┌── header (58px) ──────────────────────────────────────────────────────────┐
+  ├── waveform panel (42% of inner) ──────────────────────────────────────────┤
+  ├── FFT spectrum panel (58% of inner) ──────────────────────────────────────┤
+  └── controls bar (80px) ────────────────────────────────────────────────────┘
+       [Amplitude ●──────]   [Time window ──●───]   [Max frequency ─────●]
+
+Mouse:
+  Drag slider handle     → adjust value
+  Left click elsewhere   → pause / resume
+  Right click / ESC / Q  → quit
+"""
+
+import math
+import numpy as np
+import pygame
+
+# ── Colours ───────────────────────────────────────────────────────────────────
+BG        = (  5,   5,  15)
+GRID      = ( 25,  25,  45)
+ACCENT    = ( 60, 100, 220)
+WAVE_COL  = (  0, 230, 180)   # cyan-green
+FFT_COL   = (220,  40, 180)   # magenta
+TEXT_COL  = (180, 180, 210)
+TITLE_COL = (240, 240, 255)
+
+TITLE     = "BSc Analog Electronics — Real-Time Audio Spectrum"
+DB_MIN    = -80.0
+DB_MAX    =   0.0
+LABEL_PAD =  48           # px reserved on left for amplitude / dB labels
+FREQ_TICKS = (200, 500, 1000, 2000, 3000, 4000, 6000, 8000)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+class Slider:
+    """Horizontal slider widget. rect defines the full widget bounding box
+    (label text drawn at rect.top, track centred in the lower portion)."""
+
+    _TRACK_H  = 4
+    _HANDLE_R = 9
+
+    def __init__(self, rect: pygame.Rect, label: str,
+                 min_val: float, max_val: float, init_val: float,
+                 log: bool = False, fmt: str = "{:.2g}", unit: str = ""):
+        self.rect      = rect
+        self.label     = label
+        self.min_val   = float(min_val)
+        self.max_val   = float(max_val)
+        self._value    = float(init_val)
+        self.log       = log
+        self.fmt       = fmt
+        self.unit      = unit
+        self._dragging = False
+        if log:
+            self._lmin = math.log(min_val)
+            self._lmax = math.log(max_val)
+
+    # Track centre-y sits in the lower two-thirds of the rect
+    def _track_y(self) -> int:
+        return self.rect.top + int(self.rect.height * 0.72)
+
+    @property
+    def value(self) -> float:
+        return self._value
+
+    @property
+    def int_value(self) -> int:
+        return int(round(self._value))
+
+    def _frac(self) -> float:
+        if self.log:
+            return (math.log(self._value) - self._lmin) / (self._lmax - self._lmin)
+        return (self._value - self.min_val) / (self.max_val - self.min_val)
+
+    def _handle_pos(self) -> tuple[int, int]:
+        x = int(self.rect.left + self._frac() * self.rect.width)
+        return (x, self._track_y())
+
+    def _x_to_val(self, x: int) -> float:
+        frac = max(0.0, min(1.0, (x - self.rect.left) / self.rect.width))
+        if self.log:
+            return math.exp(self._lmin + frac * (self._lmax - self._lmin))
+        return self.min_val + frac * (self.max_val - self.min_val)
+
+    def handle_event(self, ev: pygame.event.Event) -> bool:
+        """Return True if the event was consumed by this slider."""
+        if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+            hx, hy = self._handle_pos()
+            if math.hypot(ev.pos[0] - hx, ev.pos[1] - hy) <= self._HANDLE_R + 8:
+                self._dragging = True
+                self._value = self._x_to_val(ev.pos[0])
+                return True
+        elif ev.type == pygame.MOUSEMOTION and self._dragging:
+            self._value = self._x_to_val(ev.pos[0])
+            return True
+        elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1 and self._dragging:
+            self._dragging = False
+            return True
+        return False
+
+    def draw(self, surface: pygame.Surface, font: pygame.font.Font) -> None:
+        hx, hy = self._handle_pos()
+        tx0 = self.rect.left
+        tx1 = self.rect.right
+
+        # Track (filled left of handle with accent)
+        pygame.draw.line(surface, GRID,   (tx0, hy), (tx1, hy), self._TRACK_H)
+        pygame.draw.line(surface, ACCENT, (tx0, hy), (hx,  hy), self._TRACK_H)
+
+        # Handle circle
+        col = WAVE_COL if self._dragging else ACCENT
+        pygame.draw.circle(surface, col, (hx, hy), self._HANDLE_R)
+
+        # Label + current value above the track
+        val_str = self.fmt.format(self._value) + self.unit
+        lbl = font.render(f"{self.label}:  {val_str}", True, TEXT_COL)
+        surface.blit(lbl, (tx0, self.rect.top + 4))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+class Visualizer:
+    def __init__(self, fullscreen: bool = True, width: int = 1280, height: int = 720):
+        pygame.init()
+        pygame.display.set_caption(TITLE)
+        pygame.mouse.set_visible(True)   # cursor needed for sliders
+
+        if fullscreen:
+            self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+        else:
+            self.screen = pygame.display.set_mode((width, height))
+
+        self.W, self.H = self.screen.get_size()
+        self.font_lg = pygame.font.SysFont("monospace", 26, bold=True)
+        self.font_sm = pygame.font.SysFont("monospace", 17)
+        self.clock   = pygame.time.Clock()
+
+        # ── Layout ────────────────────────────────────────────────────────────
+        hdr_h  = 58
+        ctrl_h = 80
+        inner  = self.H - hdr_h - ctrl_h
+        wave_h = int(inner * 0.42)
+        fft_h  = inner - wave_h
+
+        self.hdr_rect  = pygame.Rect(0, 0,               self.W, hdr_h)
+        self.wave_rect = pygame.Rect(0, hdr_h,           self.W, wave_h)
+        self.fft_rect  = pygame.Rect(0, hdr_h + wave_h,  self.W, fft_h)
+        self.ctrl_rect = pygame.Rect(0, self.H - ctrl_h, self.W, ctrl_h)
+
+        self._fill_surf = pygame.Surface((self.W, fft_h), pygame.SRCALPHA)
+
+        # ── Sliders ───────────────────────────────────────────────────────────
+        pad  = 50
+        gap  = 40
+        s_w  = (self.W - 2 * pad - 2 * gap) // 3
+        s_y  = self.ctrl_rect.top + 6
+        s_h  = ctrl_h - 10
+
+        self._amp_slider = Slider(
+            pygame.Rect(pad, s_y, s_w, s_h),
+            label="Amplitude", min_val=0.1, max_val=10.0, init_val=1.0,
+            log=True, fmt="{:.2f}", unit="×",
+        )
+        self._time_slider = Slider(
+            pygame.Rect(pad + s_w + gap, s_y, s_w, s_h),
+            label="Time window", min_val=4.0, max_val=128.0, init_val=32.0,
+            log=True, fmt="{:.0f}", unit=" ms",
+        )
+        self._freq_slider = Slider(
+            pygame.Rect(pad + 2 * (s_w + gap), s_y, s_w, s_h),
+            label="Max frequency", min_val=200.0, max_val=8000.0, init_val=8000.0,
+            log=True, fmt="{:.0f}", unit=" Hz",
+        )
+        self._sliders = (self._amp_slider, self._time_slider, self._freq_slider)
+
+        self.paused = False
+
+    # ── Properties ────────────────────────────────────────────────────────────
+
+    @property
+    def n_samples(self) -> int:
+        """Number of waveform samples to request (time window × 16 kHz)."""
+        return max(2, int(self._time_slider.value * 16))   # ms × 16 → samples
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def draw(self, waveform: np.ndarray, fft_db: np.ndarray, freqs: np.ndarray,
+             status: str = "") -> None:
+        self.screen.fill(BG)
+        self._draw_header(status)
+        if self.paused:
+            self._draw_paused_overlay()
+        else:
+            self._draw_waveform(waveform)
+            self._draw_fft(fft_db, freqs)
+        self._draw_controls()
+        pygame.display.flip()
+
+    def process_events(self) -> bool:
+        """Return False when the user wants to quit."""
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                return False
+            if ev.type == pygame.KEYDOWN and ev.key in (pygame.K_ESCAPE, pygame.K_q):
+                return False
+
+            # Sliders get first pick of mouse events
+            slider_hit = any(s.handle_event(ev) for s in self._sliders)
+
+            if not slider_hit and ev.type == pygame.MOUSEBUTTONDOWN:
+                if ev.button == 1:
+                    self.paused = not self.paused
+                elif ev.button == 3:
+                    return False
+
+        return True
+
+    def tick(self, fps: int = 30) -> None:
+        self.clock.tick(fps)
+
+    def get_fps(self) -> float:
+        return self.clock.get_fps()
+
+    def quit(self) -> None:
+        pygame.quit()
+
+    # ── Private helpers ───────────────────────────────────────────────────────
+
+    def _draw_paused_overlay(self) -> None:
+        overlay = pygame.Surface((self.W, self.H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 160))
+        self.screen.blit(overlay, (0, 0))
+        msg = self.font_lg.render("PAUSED  —  click to resume", True, TITLE_COL)
+        self.screen.blit(msg, ((self.W - msg.get_width()) // 2,
+                                (self.H - msg.get_height()) // 2))
+
+    def _draw_header(self, status: str) -> None:
+        r = self.hdr_rect
+        pygame.draw.line(self.screen, ACCENT, (0, r.bottom - 1), (self.W, r.bottom - 1))
+        title_s = self.font_lg.render(TITLE, True, TITLE_COL)
+        self.screen.blit(title_s, (20, (r.height - title_s.get_height()) // 2))
+        fps = self.get_fps()
+        rt = f"{status}  {fps:.0f} fps" if status else f"{fps:.0f} fps"
+        rt_s = self.font_sm.render(rt, True, TEXT_COL)
+        self.screen.blit(rt_s, (self.W - rt_s.get_width() - 16,
+                                 (r.height - rt_s.get_height()) // 2))
+
+    def _draw_controls(self) -> None:
+        pygame.draw.line(self.screen, ACCENT, (0, self.ctrl_rect.top),
+                         (self.W, self.ctrl_rect.top))
+        for s in self._sliders:
+            s.draw(self.screen, self.font_sm)
+
+    def _draw_waveform(self, waveform: np.ndarray) -> None:
+        r    = self.wave_rect
+        amp  = self._amp_slider.value
+        mid_y   = r.centery
+        draw_x0 = r.left + LABEL_PAD
+        draw_w  = r.width - LABEL_PAD
+        draw_h  = r.height - 20   # vertical margin
+
+        lbl = self.font_sm.render("WAVEFORM", True, WAVE_COL)
+        self.screen.blit(lbl, (draw_x0, r.top + 5))
+
+        # Horizontal grid lines at fixed screen fractions; label = actual amplitude at that line.
+        # Mapping: waveform value v → y = mid_y - v * amp * draw_h/2
+        # Inverse: v at screen frac f from centre = f / amp
+        for frac in (1.0, 0.5, 0.0, -0.5, -1.0):
+            y = int(mid_y - frac * draw_h / 2)
+            if not (r.top + 2 <= y <= r.bottom - 2):
+                continue
+            pygame.draw.line(self.screen, GRID, (draw_x0, y), (r.right, y))
+            v = frac / amp
+            text = "0" if abs(v) < 1e-9 else f"{v:+.2g}"
+            ls = self.font_sm.render(text, True, GRID)
+            self.screen.blit(ls, (r.left + 2, y - ls.get_height() // 2))
+
+        pygame.draw.line(self.screen, ACCENT, (0, r.bottom), (self.W, r.bottom))
+
+        if len(waveform) < 2:
+            return
+
+        n  = len(waveform)
+        xs = np.linspace(draw_x0, r.right - 1, n).astype(int)
+        ys = (mid_y - waveform * amp * (draw_h / 2)).astype(int)
+        ys = np.clip(ys, r.top + 2, r.bottom - 2)
+        pygame.draw.lines(self.screen, WAVE_COL, False,
+                          list(zip(xs.tolist(), ys.tolist())), 2)
+
+    def _draw_fft(self, fft_db: np.ndarray, freqs: np.ndarray) -> None:
+        r        = self.fft_rect
+        max_freq = max(200, self._freq_slider.int_value)
+        draw_x0  = r.left + LABEL_PAD
+        draw_w   = r.width - LABEL_PAD
+        draw_bot = r.bottom - 22    # room for freq labels below
+        draw_h   = draw_bot - r.top - 26
+
+        lbl = self.font_sm.render("SPECTRUM (FFT)", True, FFT_COL)
+        self.screen.blit(lbl, (draw_x0, r.top + 5))
+
+        def db_to_y(db: float) -> int:
+            frac = (db - DB_MIN) / (DB_MAX - DB_MIN)
+            return int(draw_bot - frac * draw_h)
+
+        # dB grid
+        for db in (-60, -40, -20, 0):
+            y = db_to_y(db)
+            if r.top + 20 <= y <= draw_bot:
+                pygame.draw.line(self.screen, GRID, (draw_x0, y), (r.right, y))
+                ls = self.font_sm.render(f"{db:+d}", True, GRID)
+                self.screen.blit(ls, (r.left + 2, y - ls.get_height() // 2))
+
+        # Frequency tick marks — only those within the current max_freq
+        for f in FREQ_TICKS:
+            if f > max_freq:
+                break
+            x = draw_x0 + int(f / max_freq * draw_w)
+            pygame.draw.line(self.screen, GRID, (x, r.top + 24), (x, draw_bot))
+            lbl_f = f"{f // 1000}k" if f >= 1000 else str(f)
+            ls = self.font_sm.render(lbl_f, True, GRID)
+            self.screen.blit(ls, (x - ls.get_width() // 2, draw_bot + 3))
+
+        if len(fft_db) < 2 or len(freqs) < 2:
+            return
+
+        mask   = freqs <= max_freq
+        f_sel  = freqs[mask]
+        db_sel = np.clip(fft_db[mask], DB_MIN, DB_MAX)
+
+        if len(f_sel) < 2:
+            return
+
+        xs = (draw_x0 + f_sel / max_freq * draw_w).astype(int)
+        ys = np.array([db_to_y(float(d)) for d in db_sel], dtype=int)
+        ys = np.clip(ys, r.top + 24, draw_bot)
+
+        # Semi-transparent fill
+        self._fill_surf.fill((0, 0, 0, 0))
+        poly = ([(int(xs[0]), draw_bot - r.top)]
+                + [(int(x), int(y) - r.top) for x, y in zip(xs, ys)]
+                + [(int(xs[-1]), draw_bot - r.top)])
+        pygame.draw.polygon(self._fill_surf, (*FFT_COL, 45), poly)
+        self.screen.blit(self._fill_surf, (0, r.top))
+
+        pts = list(zip(xs.tolist(), ys.tolist()))
+        if len(pts) >= 2:
+            pygame.draw.lines(self.screen, FFT_COL, False, pts, 2)

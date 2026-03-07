@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Spectral — Function Generator Controls</title>
+<style>
+  :root {
+    --bg:       #05050f;
+    --surface:  #16162a;
+    --border:   #2a2a50;
+    --accent:   #3c64dc;
+    --text:     #b4b4d2;
+    --title:    #f0f0ff;
+    --cyan:     #00e6b4;
+    --magenta:  #dc28b4;
+    --stop-bg:  #821414;
+    --stop-hov: #c83232;
+    --sine:     #00d2a0;
+    --square:   #dca000;
+    --triangle: #50b4ff;
+    --saw:      #d246d2;
+    --yellow:   #ffc800;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100dvh;
+    -webkit-tap-highlight-color: transparent;
+  }
+  header {
+    background: var(--surface);
+    border-bottom: 2px solid var(--accent);
+    padding: 12px 16px;
+    text-align: center;
+  }
+  header h1 {
+    font-size: 16px;
+    color: var(--title);
+    font-weight: 700;
+  }
+  header .status {
+    font-size: 11px;
+    color: var(--accent);
+    margin-top: 2px;
+  }
+  .status.connected { color: var(--cyan); }
+  .status.disconnected { color: var(--stop-hov); }
+
+  /* ── Voice rows ──────────────────────────────────────────────── */
+  .voice {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 12px;
+  }
+  .voice-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .voice-label {
+    font-size: 18px;
+    font-weight: 700;
+    min-width: 34px;
+  }
+  .wave-btns {
+    display: flex;
+    gap: 4px;
+    flex: 1;
+  }
+  .wave-btn {
+    flex: 1;
+    padding: 8px 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .wave-btn.active { color: var(--title); }
+  .wave-btn[data-wave="SINE"].active     { background: var(--sine); }
+  .wave-btn[data-wave="SQUARE"].active   { background: var(--square); }
+  .wave-btn[data-wave="TRIANGLE"].active { background: var(--triangle); }
+  .wave-btn[data-wave="SAW"].active      { background: var(--saw); }
+
+  .stop-voice-btn {
+    padding: 8px 12px;
+    border: 1px solid var(--stop-bg);
+    border-radius: 6px;
+    background: var(--stop-bg);
+    color: var(--title);
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .stop-voice-btn:active { background: var(--stop-hov); }
+
+  /* ── Sliders ─────────────────────────────────────────────────── */
+  .slider-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+  }
+  .slider-row label {
+    font-size: 11px;
+    min-width: 40px;
+    text-align: right;
+    color: var(--text);
+  }
+  .slider-row input[type="range"] {
+    flex: 1;
+    height: 24px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    cursor: pointer;
+  }
+  .slider-row input[type="range"]::-webkit-slider-runnable-track {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+  }
+  .slider-row input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    background: var(--accent);
+    margin-top: -8px;
+  }
+  .slider-row .val {
+    font-size: 12px;
+    min-width: 64px;
+    text-align: left;
+    color: var(--cyan);
+    font-weight: 600;
+  }
+
+  /* ── Master bar ──────────────────────────────────────────────── */
+  .master-section {
+    background: var(--surface);
+    border-top: 2px solid var(--accent);
+    padding: 12px;
+  }
+  .master-section h2 {
+    font-size: 13px;
+    color: var(--title);
+    margin-bottom: 8px;
+  }
+  .stop-all-btn {
+    display: block;
+    width: 100%;
+    padding: 14px;
+    margin-top: 12px;
+    border: none;
+    border-radius: 8px;
+    background: var(--stop-bg);
+    color: var(--title);
+    font-family: inherit;
+    font-size: 16px;
+    font-weight: 700;
+    cursor: pointer;
+    letter-spacing: 1px;
+  }
+  .stop-all-btn:active { background: var(--stop-hov); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Spectral — Function Generator</h1>
+  <div class="status disconnected" id="ws-status">disconnected</div>
+</header>
+
+<main id="voices"></main>
+
+<section class="master-section">
+  <h2>Master Controls</h2>
+  <div class="slider-row">
+    <label>Vol</label>
+    <input type="range" min="0" max="100" value="75" id="master-vol">
+    <span class="val" id="master-vol-val">75%</span>
+  </div>
+  <div class="slider-row">
+    <label>Gain</label>
+    <input type="range" min="50" max="400" value="100" id="master-gain">
+    <span class="val" id="master-gain-val">1.00×</span>
+  </div>
+  <div class="slider-row">
+    <label>BW</label>
+    <input type="range" min="0" max="1000" value="1000" id="master-bw">
+    <span class="val" id="master-bw-val">20000 Hz</span>
+  </div>
+  <button class="stop-all-btn" id="stop-all-btn">STOP ALL</button>
+</section>
+
+<script>
+// ── WebSocket ────────────────────────────────────────────────────────────────
+const WS_URL = `ws://${location.host}/ws`;
+let ws = null;
+let reconnectTimer = null;
+
+function wsConnect() {
+  ws = new WebSocket(WS_URL);
+  const el = document.getElementById('ws-status');
+  ws.onopen = () => { el.textContent = 'connected'; el.className = 'status connected'; };
+  ws.onclose = () => {
+    el.textContent = 'disconnected'; el.className = 'status disconnected';
+    reconnectTimer = setTimeout(wsConnect, 1500);
+  };
+  ws.onerror = () => ws.close();
+}
+wsConnect();
+
+function sendCmd(cmd) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'command', command: cmd }));
+  }
+}
+
+// ── Log-scale helpers for frequency and BW sliders ───────────────────────────
+// Map 0-1000 linear slider → 20-20000 Hz logarithmic
+function sliderToFreq(v) {
+  const frac = v / 1000;
+  return Math.round(20 * Math.pow(1000, frac));   // 20 * 1000^frac
+}
+function freqToSlider(f) {
+  return Math.round(1000 * Math.log(f / 20) / Math.log(1000));
+}
+
+// Map 0-1000 linear slider → 500-20000 Hz logarithmic for BW
+function sliderToBW(v) {
+  const frac = v / 1000;
+  return Math.round(500 * Math.pow(40, frac));   // 500 * 40^frac
+}
+
+// ── Voice state ──────────────────────────────────────────────────────────────
+const WAVE_TYPES = ['SINE', 'SQUARE', 'TRIANGLE', 'SAW'];
+const voices = [];
+
+function voiceCmd(n) {
+  const v = voices[n - 1];
+  sendCmd(`WAVE${n} ${v.wave} ${v.freq} ${v.amp.toFixed(2)}`);
+}
+
+function buildVoice(n) {
+  const state = { wave: 'SINE', freq: 440, amp: 0.50 };
+  voices.push(state);
+
+  const WAVE_COLORS = { SINE: 'var(--sine)', SQUARE: 'var(--square)',
+                         TRIANGLE: 'var(--triangle)', SAW: 'var(--saw)' };
+
+  const div = document.createElement('div');
+  div.className = 'voice';
+  div.innerHTML = `
+    <div class="voice-header">
+      <span class="voice-label" style="color:var(--sine)">V${n}</span>
+      <div class="wave-btns">
+        ${WAVE_TYPES.map(w =>
+          `<button class="wave-btn${w === 'SINE' ? ' active' : ''}" data-wave="${w}">${w}</button>`
+        ).join('')}
+      </div>
+      <button class="stop-voice-btn">STOP</button>
+    </div>
+    <div class="slider-row">
+      <label>Freq</label>
+      <input type="range" min="0" max="1000" value="${freqToSlider(440)}" class="freq-slider">
+      <span class="val freq-val">440 Hz</span>
+    </div>
+    <div class="slider-row">
+      <label>Amp</label>
+      <input type="range" min="0" max="100" value="50" class="amp-slider">
+      <span class="val amp-val">0.50</span>
+    </div>
+  `;
+
+  // Wave type buttons
+  const waveBtns = div.querySelectorAll('.wave-btn');
+  const label = div.querySelector('.voice-label');
+  waveBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      waveBtns.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.wave = btn.dataset.wave;
+      label.style.color = WAVE_COLORS[state.wave];
+      voiceCmd(n);
+    });
+  });
+
+  // Stop button
+  div.querySelector('.stop-voice-btn').addEventListener('click', () => {
+    sendCmd(`STOP${n}`);
+  });
+
+  // Freq slider (log)
+  const freqSlider = div.querySelector('.freq-slider');
+  const freqVal = div.querySelector('.freq-val');
+  freqSlider.addEventListener('input', () => {
+    state.freq = sliderToFreq(parseInt(freqSlider.value));
+    freqVal.textContent = state.freq + ' Hz';
+    voiceCmd(n);
+  });
+
+  // Amp slider
+  const ampSlider = div.querySelector('.amp-slider');
+  const ampVal = div.querySelector('.amp-val');
+  ampSlider.addEventListener('input', () => {
+    state.amp = parseInt(ampSlider.value) / 100;
+    ampVal.textContent = state.amp.toFixed(2);
+    voiceCmd(n);
+  });
+
+  document.getElementById('voices').appendChild(div);
+}
+
+for (let i = 1; i <= 2; i++) buildVoice(i);
+
+// ── Master controls ──────────────────────────────────────────────────────────
+const volSlider  = document.getElementById('master-vol');
+const volVal     = document.getElementById('master-vol-val');
+volSlider.addEventListener('input', () => {
+  volVal.textContent = volSlider.value + '%';
+  sendCmd(`VOLUME ${volSlider.value}`);
+});
+
+const gainSlider = document.getElementById('master-gain');
+const gainVal    = document.getElementById('master-gain-val');
+gainSlider.addEventListener('input', () => {
+  const g = parseInt(gainSlider.value) / 100;
+  gainVal.textContent = g.toFixed(2) + '×';
+  sendCmd(`CLIP ${g.toFixed(2)}`);
+});
+
+const bwSlider = document.getElementById('master-bw');
+const bwVal    = document.getElementById('master-bw-val');
+bwSlider.addEventListener('input', () => {
+  const bw = sliderToBW(parseInt(bwSlider.value));
+  bwVal.textContent = bw + ' Hz';
+  sendCmd(`BW ${bw}`);
+});
+
+document.getElementById('stop-all-btn').addEventListener('click', () => {
+  sendCmd('STOP');
+});
+</script>
+</body>
+</html>
