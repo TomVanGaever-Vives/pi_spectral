@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Spectral Analyser
+Comment=Real-time audio spectrum analyser (ESP32 via UART)
+Exec=bash /home/pi/pi_spectral/pi-server/run.sh
+Icon=audio-card
+Terminal=false
+Categories=AudioVideo;Education;

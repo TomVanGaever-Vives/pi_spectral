@@ -31,7 +31,7 @@ def _crc8(data: bytes) -> int:
 
 
 class SerialHandler:
-    def __init__(self, port: str, baud: int = 921600,
+    def __init__(self, port: str, baud: int = 460800,
                  sample_queue: queue.Queue | None = None):
         self.port = port
         self.baud = baud
